@@ -1,0 +1,782 @@
+"""Markov Chain implementation for Tic Tac Toe AI."""
+import numpy as np
+from config import TRANSITION_MATRIX, AI_PIECE, PLAYER_PIECE, BOARD_SIZE, EMPTY
+from game_board import GameBoard
+from typing import Tuple, Optional, List
+
+class MarkovChainAI:
+    def __init__(self, board: GameBoard, piece: str, transition_matrix=None):
+        self.board = board
+        self.piece = piece  # Store which piece this AI is using
+        self.opponent = AI_PIECE if self.piece == PLAYER_PIECE else PLAYER_PIECE
+
+        # Sử dụng ma trận chuyển đổi được truyền vào hoặc mặc định
+        self.transition_matrix = transition_matrix if transition_matrix else TRANSITION_MATRIX
+
+        # Dictionary để theo dõi thống kê sử dụng chiến lược
+        self.strategy_stats = {
+            'win': 0,
+            'block': 0,
+            'fork': 0,
+            'center': 0,
+            'corner': 0,
+            'opposite_corner': 0,
+            'two_in_a_row': 0,
+            'random': 0
+        }
+
+    def get_next_move(self) -> Tuple[Optional[Tuple[int, int]], str]:
+        """Determine the next move based on Markov Chain probabilities.
+        Returns both the chosen move and a detailed explanation.
+        """
+        print(f"\nAI ({self.piece}) thinking...")
+
+        move = None
+        explanation = ""  # Biến để lưu giải thích
+
+        # Kiểm tra nước thắng - luôn ưu tiên thắng ngay
+        winning_move = self.board.get_winning_move(self.piece)
+        if winning_move:
+            self.strategy_stats['win'] += 1
+            return winning_move, f"AI ({self.piece}) found winning move at {winning_move} - Going for immediate win!"
+            
+        # Tìm nước tạo thế thắng kép
+        fork_move = self._find_fork_move(self.piece)
+        if fork_move and np.random.random() < 0.8:  # 80% cơ hội tạo thế thắng kép
+            self.strategy_stats['fork'] += 1
+            return fork_move, f"AI ({self.piece}) creating fork position at {fork_move} - This move creates multiple winning opportunities!"
+            return move, explanation
+
+        # Kiểm tra nước chặn ngay lập tức - ưu tiên thứ hai
+        # Chặn được đặt lên đầu tiên để đảm bảo không bỏ lỡ nước phòng thủ quan trọng
+        blocking_move = self.board.get_winning_move(self.opponent)
+        if blocking_move:
+            self.strategy_stats['block'] += 1
+            move = blocking_move
+            explanation = f"AI ({self.piece}) blocking opponent at {move} - Preventing the opponent from winning."
+            return move, explanation
+
+        # Ưu tiên nước thắng trực tiếp cao hơn phòng thủ nếu có cơ hội
+        if winning_move and np.random.random() < 0.9:  # 90% cơ hội chọn nước thắng
+            self.strategy_stats['win'] += 1
+            move = winning_move
+            explanation = f"AI ({self.piece}) choosing winning move at {move} - Going for the win!"
+            return move, explanation
+
+        # Chiến lược tấn công nâng cao - tìm nước tạo fork với độ ưu tiên rất cao
+        fork_move = self._find_fork_move(self.piece)
+        if fork_move and 'fork' in self.transition_matrix and self.transition_matrix['fork'] > 0.2:
+            # Tăng xác suất tạo fork lên 20%
+            self.strategy_stats['fork'] += 1
+            move = fork_move
+            explanation = f"AI ({self.piece}) creating aggressive fork at {move} - Forcing opponent's response."
+            return move, explanation
+
+        # Ưu tiên tấn công cao hơn, trừ khi có chế độ phòng thủ 
+        # Ưu tiên luôn tạo thế tấn công hai quân khi chơi "tấn công"
+        if 'two_in_a_row' in self.transition_matrix and self.transition_matrix['two_in_a_row'] > 0:
+            two_in_a_row_move = self._find_two_in_a_row_move()
+            if two_in_a_row_move:
+                self.strategy_stats['two_in_a_row'] += 1
+                move = two_in_a_row_move
+                explanation = f"AI ({self.piece}) placing at {move} - Creating a line of two, preparing for a win."
+
+                # Chỉ trả về nước tấn công thay vì chặn khi không phải nước thắng trực tiếp của đối thủ
+                # và AI đang ở chế độ tấn công quyết liệt
+                # hoặc với xác suất thấp để thỉnh thoảng bỏ qua phòng thủ để tấn công
+                aggressive_threshold = 0.08
+                if blocking_move and 'block' in self.transition_matrix:
+                    # Trong chế độ tấn công, nên có xác suất bỏ qua nước chặn để tấn công
+                    # Xác suất này bằng với xác suất phòng thủ
+                    aggressive_threshold = self.transition_matrix['block'] * 2  # Nhân 2 để tăng khả năng bỏ qua phòng thủ
+
+                # Chỉ trả về nước tấn công hai quân nếu:
+                # - Không có nước chặn (không có nước thắng trực tiếp của đối thủ)
+                # - Hoặc có nước chặn nhưng AI quyết định chấp nhận rủi ro để tấn công
+                # Tấn công ngẫu nhiên với xác suất 1 - aggressive_threshold
+                attack_chance = np.random.random()
+                if not blocking_move or attack_chance > aggressive_threshold:
+                    # Khi được tạo thế tấn công thay vì phòng thủ, in thêm giải thích chi tiết
+                    if blocking_move:
+                        explanation += f" (AI chọn tấn công thay vì phòng thủ)"
+                    return move, explanation
+
+        # Chỉ chặn nếu đối thủ sắp thắng hoặc không có nước tấn công tốt hơn
+        if blocking_move:
+            self.strategy_stats['block'] += 1
+            move = blocking_move
+            explanation = f"AI ({self.piece}) blocking opponent at {move} - Preventing the opponent from winning."
+            return move, explanation
+
+        # Chặn fork nếu cần thiết (nhưng với AI tấn công, thường đặt ở ưu tiên thấp hơn)
+        opponent_fork = self._find_fork_move(self.opponent)
+        if opponent_fork and ('block' in self.transition_matrix and self.transition_matrix['block'] > 0.1):
+            self.strategy_stats['block'] += 1
+            move = opponent_fork
+            explanation = f"AI ({self.piece}) blocking fork creation at {move} - Preventing opponent from creating multiple threats."
+            return move, explanation
+
+        # Chiến lược tấn công sẽ tạo thế tấn công tốt hơn
+        # Nếu đó là nước đi đầu tiên, luôn chọn vị trí góc thay vì trung tâm
+        if self.board.get_valid_moves() and len(self.board.get_valid_moves()) == BOARD_SIZE * BOARD_SIZE:
+            # Đây là nước đi đầu tiên, AI tấn công thường chọn góc
+            corners = [(0, 0), (0, BOARD_SIZE-1), (BOARD_SIZE-1, 0), (BOARD_SIZE-1, BOARD_SIZE-1)]
+            move = corners[np.random.randint(len(corners))]
+            self.strategy_stats['corner'] += 1
+            explanation = f"AI ({self.piece}) taking initial corner at {move} - Starting with a strong attacking position."
+            return move, explanation
+
+        # Thử chiến lược đường chéo nếu thích hợp 
+        # (ưu tiên cho các phong cách chơi tấn công và thắng nhanh)
+        diagonal_move = self._find_diagonal_strategy()
+        if diagonal_move and ('fork' in self.transition_matrix and self.transition_matrix['fork'] > 0.05):
+            self.strategy_stats['fork'] += 1  # Sử dụng thống kê fork vì đây là chiến lược cao cấp tương tự
+            move = diagonal_move
+            explanation = f"AI ({self.piece}) setting up diagonal strategy at {move} - Creating powerful attacking position."
+            return move, explanation
+
+        # Nếu ô giữa trống, có thể đánh vào ô giữa (nhưng ưu tiên thấp hơn với AI tấn công)
+        center = BOARD_SIZE // 2
+        if self.board.is_valid_move(center, center) and ('center' in self.transition_matrix and self.transition_matrix['center'] > 0.01):
+            self.strategy_stats['center'] += 1
+            move = (center, center)
+            explanation = f"AI ({self.piece}) taking center at {move} - Control of the center provides strategic advantage."
+            return move, explanation
+
+        # Chiến lược tạo thế "tấn công kép" - tìm vị trí có thể tạo hai hướng tấn công
+        # Thử tìm góc đối diện với góc của mình (không phải của đối thủ)
+        my_corners = []
+        for corner in [(0, 0), (0, BOARD_SIZE-1), (BOARD_SIZE-1, 0), (BOARD_SIZE-1, BOARD_SIZE-1)]:
+            x, y = corner
+            if self.board.get_piece(x, y) == self.piece:
+                my_corners.append(corner)
+
+        if my_corners:
+            opposite_corners = {
+                (0, 0): (BOARD_SIZE-1, BOARD_SIZE-1),
+                (0, BOARD_SIZE-1): (BOARD_SIZE-1, 0),
+                (BOARD_SIZE-1, 0): (0, BOARD_SIZE-1),
+                (BOARD_SIZE-1, BOARD_SIZE-1): (0, 0)
+            }
+
+            for corner in my_corners:
+                opposite_x, opposite_y = opposite_corners[corner]
+                if self.board.is_valid_move(opposite_x, opposite_y):
+                    self.strategy_stats['opposite_corner'] += 1
+                    move = (opposite_x, opposite_y)
+                    explanation = f"AI ({self.piece}) completing diagonal at {move} - Creating powerful attacking position."
+                    return move, explanation
+
+        # Nếu đối thủ chiếm góc, chiếm góc đối diện để cản phá
+        opposite_corner_move = self._find_opposite_corner()
+        if opposite_corner_move:
+            self.strategy_stats['opposite_corner'] += 1
+            move = opposite_corner_move
+            explanation = f"AI ({self.piece}) taking opposite corner at {move} - Creating balanced board position."
+            return move, explanation
+
+        # Ưu tiên góc trống
+        empty_corner_move = self._find_empty_corner()
+        if empty_corner_move:
+            self.strategy_stats['corner'] += 1
+            move = empty_corner_move
+            explanation = f"AI ({self.piece}) taking corner at {move} - Corners provide good opportunities for winning."
+            return move, explanation
+
+        # Nếu không còn góc, tìm cạnh trống để tăng cơ hội tấn công
+        edges = [(0, 1), (1, 0), (2, 1), (1, 2)]  # Giả sử bàn cờ 3x3
+        valid_edges = [pos for pos in edges if self.board.is_valid_move(*pos)]
+        if valid_edges:
+            move = valid_edges[np.random.randint(len(valid_edges))]
+            explanation = f"AI ({self.piece}) taking edge at {move} - Building toward a strategic position."
+            return move, explanation
+
+        # Nếu vẫn không tìm được nước đi tối ưu, sử dụng Markov Chain để chọn chiến lược
+        if move is None:
+            strategies = list(self.transition_matrix.keys())
+            probabilities = [self.transition_matrix[s] for s in strategies]
+
+            # Normalize probabilities
+            probabilities = np.array(probabilities) / sum(probabilities)
+
+            # Select strategy based on probabilities
+            strategy = np.random.choice(strategies, p=probabilities)
+            print(f"AI ({self.piece}) chose strategy: {strategy}")
+
+            # Cập nhật thống kê chiến lược được chọn
+            self.strategy_stats[strategy] += 1
+
+            # Nếu vẫn chưa có nước đi tốt, chọn nước đi ngẫu nhiên thông minh nhất
+            move, explanation = self._make_best_random_move()
+
+        print(f"Board state after move:")
+        self._print_board_state()
+        return move, explanation
+
+    def _try_corner_strategy(self) -> Tuple[Optional[Tuple[int, int]], str]:
+        """Try to take a corner based on strategic importance."""
+        corners = [(0, 0), (0, BOARD_SIZE-1), (BOARD_SIZE-1, 0), (BOARD_SIZE-1, BOARD_SIZE-1)]
+
+        # Check if any corner is available
+        valid_corners = [pos for pos in corners if self.board.is_valid_move(*pos)]
+        if not valid_corners:
+            return None, ""
+
+        # Check for corners adjacent to opponent pieces (better defensive positions)
+        strategic_corners = []
+        for corner in valid_corners:
+            x, y = corner
+            adjacent_positions = self._get_adjacent_positions(x, y)
+            for adj_x, adj_y in adjacent_positions:
+                if (0 <= adj_x < BOARD_SIZE and 0 <= adj_y < BOARD_SIZE and 
+                    self.board.get_piece(adj_x, adj_y) == self.opponent):
+                    strategic_corners.append(corner)
+                    break
+
+        if strategic_corners:
+            move = strategic_corners[np.random.randint(len(strategic_corners))]
+            explanation = f"AI ({self.piece}) taking strategic corner at {move} - Corner adjacent to opponent provides defensive advantage."
+            return move, explanation
+
+        # If no strategic corner found, take any available corner
+        move = valid_corners[np.random.randint(len(valid_corners))]
+        explanation = f"AI ({self.piece}) taking corner at {move} - Corners provide good opportunities for winning."
+        return move, explanation
+
+    def _get_adjacent_positions(self, x: int, y: int) -> List[Tuple[int, int]]:
+        """Get positions adjacent to the given position."""
+        return [(x-1, y), (x+1, y), (x, y-1), (x, y+1)]
+
+    def _find_strategic_move(self) -> Tuple[Optional[Tuple[int, int]], str]:
+        """Find a strategic move that isn't a direct win or block."""
+        # Đầu tiên, tìm nước đi tạo "fork" (hai đường thắng cùng lúc)
+        fork_move = self._find_fork_move(self.piece)
+        if fork_move:
+            self.strategy_stats['fork'] += 1
+            explanation = f"AI ({self.piece}) creating a fork at {fork_move} - Setting up multiple winning opportunities."
+            return fork_move, explanation
+
+        # Nếu đối thủ có thể tạo fork, ưu tiên chặn
+        opponent_fork = self._find_fork_move(self.opponent)
+        if opponent_fork:
+            self.strategy_stats['block'] += 1
+            explanation = f"AI ({self.piece}) blocking fork creation at {opponent_fork} - Preventing opponent from creating multiple threats."
+            return opponent_fork, explanation
+
+        # Chiến lược "two-in-a-row": tạo 2 quân liên tiếp để chuẩn bị tấn công
+        two_in_a_row_move = self._find_two_in_a_row_move()
+        if two_in_a_row_move:
+            self.strategy_stats['two_in_a_row'] += 1
+            explanation = f"AI ({self.piece}) placing at {two_in_a_row_move} - Creating a line of two, preparing for a win."
+            return two_in_a_row_move, explanation
+
+        # Ưu tiên vị trí trung tâm (cho bàn cờ 3x3)
+        center = BOARD_SIZE // 2
+        if self.board.is_valid_move(center, center):
+            self.strategy_stats['center'] += 1
+            explanation = f"AI ({self.piece}) taking center at ({center}, {center}) - Control of the center provides strategic advantage."
+            return (center, center), explanation
+
+        # Ưu tiên các góc đối diện với góc đã có quân của đối thủ
+        opposite_corner_move = self._find_opposite_corner()
+        if opposite_corner_move:
+            self.strategy_stats['opposite_corner'] += 1
+            explanation = f"AI ({self.piece}) taking opposite corner at {opposite_corner_move} - Creating balanced board position."
+            return opposite_corner_move, explanation
+
+        # Ưu tiên góc trống
+        empty_corner_move = self._find_empty_corner()
+        if empty_corner_move:
+            self.strategy_stats['corner'] += 1
+            explanation = f"AI ({self.piece}) taking corner at {empty_corner_move} - Corners provide good opportunities for winning."
+            return empty_corner_move, explanation
+
+        # Cuối cùng, chọn cạnh nếu còn trống
+        edges = [(0, 1), (1, 0), (2, 1), (1, 2)]  # Giả sử bàn cờ 3x3
+        valid_edges = [pos for pos in edges if self.board.is_valid_move(*pos)]
+        if valid_edges:
+            move = valid_edges[np.random.randint(len(valid_edges))]
+            explanation = f"AI ({self.piece}) taking edge at {move} - Building toward a strategic position."
+            return move, explanation
+
+        return None, ""
+
+    def _find_fork_move(self, piece: str) -> Optional[Tuple[int, int]]:
+        """Tìm nước đi tạo fork (hai đường thắng tiềm năng)."""
+        best_move = None
+        max_winning_lines = 1  # Cần ít nhất 2 đường thắng để tạo fork
+        best_score = 0
+
+        for x, y in self.board.get_valid_moves():
+            # Thử đặt quân tạm thời
+            self.board.set_piece(x, y, piece)
+
+            # Đếm số đường thắng tiềm năng
+            winning_lines = 0
+            potential_wins = []
+            wins_coordinates = []  # Lưu tọa độ của các vị trí có thể thắng
+
+            # Kiểm tra hàng
+            for i in range(BOARD_SIZE):
+                row = [self.board.get_piece(j, i) for j in range(BOARD_SIZE)]
+
+                # Trường hợp 1: Đã có 2 quân liên tiếp và 1 ô trống (thắng tiềm năng)
+                if row.count(piece) == BOARD_SIZE - 1 and row.count(EMPTY) == 1:
+                    winning_lines += 1
+                    potential_wins.append(f"row {i}")
+
+                    # Tìm vị trí trống để thắng
+                    empty_index = row.index(EMPTY)
+                    wins_coordinates.append((empty_index, i))
+
+                # Trường hợp 2: Đã có 1 quân và 2 ô trống (khả năng tấn công sau này)
+                elif row.count(piece) == BOARD_SIZE - 2 and row.count(EMPTY) == 2 and row.count(self.opponent) == 0:
+                    winning_lines += 0.5  # Tính điểm thấp hơn nhưng vẫn có giá trị
+
+            # Kiểm tra cột
+            for i in range(BOARD_SIZE):
+                col = [self.board.get_piece(i, j) for j in range(BOARD_SIZE)]
+                if col.count(piece) == BOARD_SIZE - 1 and col.count(EMPTY) == 1:
+                    winning_lines += 1
+                    potential_wins.append(f"column {i}")
+
+                    # Tìm vị trí trống để thắng
+                    empty_index = col.index(EMPTY)
+                    wins_coordinates.append((i, empty_index))
+                elif col.count(piece) == BOARD_SIZE - 2 and col.count(EMPTY) == 2 and col.count(self.opponent) == 0:
+                    winning_lines += 0.5
+
+            # Kiểm tra đường chéo
+            diag1 = [self.board.get_piece(i, i) for i in range(BOARD_SIZE)]
+            if diag1.count(piece) == BOARD_SIZE - 1 and diag1.count(EMPTY) == 1:
+                winning_lines += 1
+                potential_wins.append("main diagonal")
+
+                # Tìm vị trí trống để thắng
+                empty_index = diag1.index(EMPTY)
+                wins_coordinates.append((empty_index, empty_index))
+            elif diag1.count(piece) == BOARD_SIZE - 2 and diag1.count(EMPTY) == 2 and diag1.count(self.opponent) == 0:
+                winning_lines += 0.5
+
+            diag2 = [self.board.get_piece(i, BOARD_SIZE-1-i) for i in range(BOARD_SIZE)]
+            if diag2.count(piece) == BOARD_SIZE - 1 and diag2.count(EMPTY) == 1:
+                winning_lines += 1
+                potential_wins.append("anti-diagonal")
+
+                # Tìm vị trí trống để thắng
+                empty_index = diag2.index(EMPTY)
+                wins_coordinates.append((empty_index, BOARD_SIZE-1-empty_index))
+            elif diag2.count(piece) == BOARD_SIZE - 2 and diag2.count(EMPTY) == 2 and diag2.count(self.opponent) == 0:
+                winning_lines += 0.5
+
+            # Tính điểm tổng hợp - quan trọng nhất là số đường thắng khác nhau
+            score = winning_lines * 2
+
+            # Xem có bao nhiêu vị trí khác nhau để thắng (chính là xác định fork thực sự)
+            unique_win_positions = set(wins_coordinates)
+            if len(unique_win_positions) >= 2:
+                # Điều này là thực sự có giá trị - tăng điểm dựa trên số lượng vị trí thắng khác nhau
+                score += len(unique_win_positions) * 3
+
+            # Ưu tiên thêm cho các vị trí chiến lược
+            if (x, y) == (BOARD_SIZE//2, BOARD_SIZE//2):  # Trung tâm 
+                score += 0.5
+            elif x in [0, BOARD_SIZE-1] and y in [0, BOARD_SIZE-1]:  # Góc
+                score += 0.3
+
+            # Hoàn tác nước đi
+            self.board.set_piece(x, y, EMPTY)
+
+            # Cập nhật nước đi tốt nhất dựa trên điểm số cao nhất
+            if score > best_score:
+                best_score = score
+                best_move = (x, y)
+                max_winning_lines = winning_lines
+            # Thêm yếu tố ngẫu nhiên khi điểm bằng nhau để tránh AI quá dễ đoán
+            elif score == best_score and score > 0 and np.random.random() < 0.2:
+                best_move = (x, y)
+
+        # Trả về nước đi tạo fork nếu tìm thấy (cần ít nhất 2 đường thắng tiềm năng)
+        if max_winning_lines >= 2 or best_score >= 3:  # Chấp nhận cả trường hợp tạo 'nửa fork'
+            return best_move
+
+        return None
+
+    def _find_two_in_a_row_move(self) -> Optional[Tuple[int, int]]:
+        """Tìm nước đi để tạo 2 quân liên tiếp, ưu tiên các nước tạo đường tấn công và
+        tăng khả năng tạo điều kiện cho fork trong tương lai."""
+        best_move = None
+        best_score = -1
+
+        for x, y in self.board.get_valid_moves():
+            # Thử đặt quân tạm thời
+            self.board.set_piece(x, y, self.piece)
+
+            # Tính điểm cho vị trí này
+            score = 0
+            potential_forks = 0  # Đếm số nước đi tiềm năng có thể dẫn đến fork
+            possible_wins = []   # Lưu các vị trí có thể thắng trong tương lai
+
+            # Kiểm tra hàng
+            for i in range(BOARD_SIZE):
+                row = [self.board.get_piece(j, i) for j in range(BOARD_SIZE)]
+                # Tạo 2 quân liên tiếp và 1 ô trống - đây là cơ hội thắng cao
+                if row.count(self.piece) == 2 and row.count(EMPTY) == 1:
+                    score += 3
+                    # Tìm vị trí trống - đây là một điểm tiềm năng để thắng
+                    empty_index = row.index(EMPTY)
+                    possible_wins.append((empty_index, i))
+                # Một quân không bị chặn - đây là cơ hội tấn công ban đầu
+                elif row.count(self.piece) == 1 and row.count(EMPTY) == 2 and row.count(self.opponent) == 0:
+                    score += 1.5
+
+            # Kiểm tra cột
+            for i in range(BOARD_SIZE):
+                col = [self.board.get_piece(i, j) for j in range(BOARD_SIZE)]
+                if col.count(self.piece) == 2 and col.count(EMPTY) == 1:
+                    score += 3
+                    # Tìm vị trí trống
+                    empty_index = col.index(EMPTY)
+                    possible_wins.append((i, empty_index))
+                elif col.count(self.piece) == 1 and col.count(EMPTY) == 2 and col.count(self.opponent) == 0:
+                    score += 1.5
+
+            # Kiểm tra đường chéo (đường chéo thường quan trọng hơn trong chiến lược)
+            diag1 = [self.board.get_piece(i, i) for i in range(BOARD_SIZE)]
+            if diag1.count(self.piece) == 2 and diag1.count(EMPTY) == 1:
+                score += 4  # Đường chéo thường quan trọng hơn
+                # Tìm vị trí trống
+                empty_index = diag1.index(EMPTY)
+                possible_wins.append((empty_index, empty_index))
+            elif diag1.count(self.piece) == 1 and diag1.count(EMPTY) == 2 and diag1.count(self.opponent) == 0:
+                score += 2
+
+            diag2 = [self.board.get_piece(i, BOARD_SIZE-1-i) for i in range(BOARD_SIZE)]
+            if diag2.count(self.piece) == 2 and diag2.count(EMPTY) == 1:
+                score += 4
+                # Tìm vị trí trống
+                empty_index = diag2.index(EMPTY)
+                possible_wins.append((empty_index, BOARD_SIZE-1-empty_index))
+            elif diag2.count(self.piece) == 1 and diag2.count(EMPTY) == 2 and diag2.count(self.opponent) == 0:
+                score += 2
+
+            # Kiểm tra khả năng tạo fork trong tương lai (có nhiều cách thắng cùng lúc)
+            # Nếu có nhiều hơn 1 cách thắng từ một vị trí, đây có thể là nước dẫn đến fork
+            if len(possible_wins) >= 2:
+                # Số lượng vị trí thắng tiềm năng khác nhau
+                unique_win_positions = set(possible_wins)
+                if len(unique_win_positions) >= 2:
+                    potential_forks = len(unique_win_positions)
+                    score += potential_forks * 2  # Tăng điểm cho khả năng tạo fork
+
+            # Ưu tiên các vị trí chiến lược (góc và trung tâm)
+            if (x, y) == (BOARD_SIZE//2, BOARD_SIZE//2):  # Trung tâm
+                score += 1.5
+            elif x in [0, BOARD_SIZE-1] and y in [0, BOARD_SIZE-1]:  # Góc
+                score += 1
+
+            # Hoàn tác nước đi
+            self.board.set_piece(x, y, EMPTY)
+
+            # Cập nhật nước đi tốt nhất
+            if score > best_score:
+                best_score = score
+                best_move = (x, y)
+            # Thêm một chút ngẫu nhiên để tránh AI quá dễ đoán, 
+            # nhưng chỉ khi điểm gần bằng với điểm cao nhất
+            elif score >= best_score * 0.9 and score > 0 and np.random.random() < 0.3:
+                best_move = (x, y)
+
+        # Chỉ trả về nước đi nếu tìm thấy thế tấn công tốt
+        if best_score > 0:
+            return best_move
+
+        return None
+
+    def _find_opposite_corner(self) -> Optional[Tuple[int, int]]:
+        """Tìm góc đối diện với góc đã có quân của đối thủ."""
+        corners = [(0, 0), (0, BOARD_SIZE-1), (BOARD_SIZE-1, 0), (BOARD_SIZE-1, BOARD_SIZE-1)]
+        opposite_corners = {
+            (0, 0): (BOARD_SIZE-1, BOARD_SIZE-1),
+            (0, BOARD_SIZE-1): (BOARD_SIZE-1, 0),
+            (BOARD_SIZE-1, 0): (0, BOARD_SIZE-1),
+            (BOARD_SIZE-1, BOARD_SIZE-1): (0, 0)
+        }
+
+        # Trước tiên, ưu tiên chiến lược chéo góc với quân của mình
+        for corner in corners:
+            x, y = corner
+            if self.board.get_piece(x, y) == self.piece:
+                opposite_x, opposite_y = opposite_corners[corner]
+                if self.board.is_valid_move(opposite_x, opposite_y):
+                    # Kiểm tra xem nước đi này có tiềm năng tạo đường chéo thắng không
+                    self.board.set_piece(opposite_x, opposite_y, self.piece)
+
+                    # Kiểm tra đường chéo
+                    diagonal_potential = False
+                    if (x, y) in [(0, 0), (BOARD_SIZE-1, BOARD_SIZE-1)]:  # Main diagonal
+                        diagonal = [self.board.get_piece(i, i) for i in range(BOARD_SIZE)]
+                        if diagonal.count(self.piece) >= 2 and diagonal.count(self.opponent) == 0:
+                            diagonal_potential = True
+                    else:  # Anti-diagonal
+                        diagonal = [self.board.get_piece(i, BOARD_SIZE-1-i) for i in range(BOARD_SIZE)]
+                        if diagonal.count(self.piece) >= 2 and diagonal.count(self.opponent) == 0:
+                            diagonal_potential = True
+
+                    # Hoàn tác nước đi
+                    self.board.set_piece(opposite_x, opposite_y, EMPTY)
+
+                    if diagonal_potential:
+                        return (opposite_x, opposite_y)
+
+        # Nếu không có chiến lược chéo góc với quân của mình, tìm góc đối diện của đối thủ
+        for corner in corners:
+            x, y = corner
+            if self.board.get_piece(x, y) == self.opponent:
+                opposite_x, opposite_y = opposite_corners[corner]
+                if self.board.is_valid_move(opposite_x, opposite_y):
+                    return (opposite_x, opposite_y)
+
+        return None
+
+    def _find_diagonal_strategy(self) -> Optional[Tuple[int, int]]:
+        """Tìm chiến lược đường chéo hiệu quả.
+        Trong cờ caro 3x3, chiến lược đường chéo rất mạnh nếu đã có 1 quân ở góc.
+        """
+        corners = [(0, 0), (0, BOARD_SIZE-1), (BOARD_SIZE-1, 0), (BOARD_SIZE-1, BOARD_SIZE-1)]
+        center = (BOARD_SIZE // 2, BOARD_SIZE // 2)
+
+        # Nếu có quân ở góc và trung tâm trống, ưu tiên lấy trung tâm
+        for x, y in corners:
+            if self.board.get_piece(x, y) == self.piece and self.board.is_valid_move(*center):
+                return center
+
+        # Nếu có quân ở trung tâm và góc trống, ưu tiên lấy góc
+        if self.board.get_piece(*center) == self.piece:
+            valid_corners = [corner for corner in corners if self.board.is_valid_move(*corner)]
+            if valid_corners:
+                # Nếu có nhiều góc, ưu tiên góc không bị chặn
+                for corner in valid_corners:
+                    cx, cy = corner
+                    # Kiểm tra các ô kề với góc này
+                    adjacent_positions = self._get_adjacent_positions(cx, cy)
+                    blocked = False
+                    for ax, ay in adjacent_positions:
+                        if 0 <= ax < BOARD_SIZE and 0 <= ay < BOARD_SIZE:
+                            if self.board.get_piece(ax, ay) == self.opponent:
+                                blocked = True
+                                break
+                    if not blocked:
+                        return corner
+
+                # Nếu tất cả đều bị chặn hoặc không có góc được ưu tiên, chọn ngẫu nhiên
+                return valid_corners[np.random.randint(len(valid_corners))]
+
+        # Kiểm tra khả năng tạo đường chéo thắng
+        main_diag = [self.board.get_piece(i, i) for i in range(BOARD_SIZE)]
+        anti_diag = [self.board.get_piece(i, BOARD_SIZE-1-i) for i in range(BOARD_SIZE)]
+
+        # Nếu đã có 1 quân trên đường chéo và không có quân đối thủ, ưu tiên tạo đường chéo
+        if main_diag.count(self.piece) == 1 and main_diag.count(self.opponent) == 0:
+            # Tìm vị trí trống trên đường chéo
+            for i in range(BOARD_SIZE):
+                if main_diag[i] == EMPTY:
+                    return (i, i)
+
+        if anti_diag.count(self.piece) == 1 and anti_diag.count(self.opponent) == 0:
+            # Tìm vị trí trống trên đường chéo phụ
+            for i in range(BOARD_SIZE):
+                if anti_diag[i] == EMPTY:
+                    return (i, BOARD_SIZE-1-i)
+
+        return None
+
+    def _find_empty_corner(self) -> Optional[Tuple[int, int]]:
+        """Tìm góc trống."""
+        corners = [(0, 0), (0, BOARD_SIZE-1), (BOARD_SIZE-1, 0), (BOARD_SIZE-1, BOARD_SIZE-1)]
+        valid_corners = [pos for pos in corners if self.board.is_valid_move(*pos)]
+
+        if valid_corners:
+            return valid_corners[np.random.randint(len(valid_corners))]
+
+        return None
+
+    def _make_best_random_move(self) -> Tuple[Optional[Tuple[int, int]], str]:
+        """Make the best random move available."""
+        valid_moves = self.board.get_valid_moves()
+        if not valid_moves:
+            return None, "No valid moves available."
+
+        # For a small board like Tic Tac Toe, we can evaluate all possible moves
+        best_moves = []
+        best_score = -float('inf')
+
+        for move in valid_moves:
+            x, y = move
+
+            # Make the move temporarily
+            self.board.set_piece(x, y, self.piece)
+
+            # Simple scoring: +1 for each adjacent own piece, -1 for opponent piece
+            score = 0
+            for adj_x, adj_y in self._get_adjacent_positions(x, y):
+                if 0 <= adj_x < BOARD_SIZE and 0 <= adj_y < BOARD_SIZE:
+                    if self.board.get_piece(adj_x, adj_y) == self.piece:
+                        score += 1
+                    elif self.board.get_piece(adj_x, adj_y) == self.opponent:
+                        score -= 1
+
+            # Center and corners are generally better (3x3 board specific)
+            if BOARD_SIZE == 3:
+                if (x, y) == (1, 1):  # Center
+                    score += 2
+                elif (x, y) in [(0, 0), (0, 2), (2, 0), (2, 2)]:  # Corners
+                    score += 1
+
+            # Undo the move
+            self.board.set_piece(x, y, EMPTY)
+
+            # Update best moves
+            if score > best_score:
+                best_score = score
+                best_moves = [move]
+            elif score == best_score:
+                best_moves.append(move)
+
+        # Choose one of the best moves randomly
+        move = best_moves[np.random.randint(len(best_moves))]
+
+        # Cập nhật thống kê khi sử dụng nước đi ngẫu nhiên
+        self.strategy_stats['random'] += 1
+
+        if best_score > 0:
+            explanation = f"AI ({self.piece}) making strategic move at {move} - This position enhances board control."
+        else:
+            explanation = f"AI ({self.piece}) making move at {move} - No better strategic options were available."
+
+        return move, explanation
+
+    def _print_board_state(self):
+        """Print current board state for debugging."""
+        print("\nCurrent board state:")
+        for y in range(BOARD_SIZE):
+            row = []
+            for x in range(BOARD_SIZE):
+                piece = self.board.get_piece(x, y)
+                row.append(piece if piece != '.' else ' ')
+            print(f"| {' | '.join(row)} |")
+        print()
+
+    def update_position(self) -> bool:
+        """Make the next move on the board."""
+        move, explanation = self.get_next_move()  # Get both move and explanation
+        if move is None:
+            return False
+
+        print(explanation)  # Print explanation before making the move
+        return self.board.make_move(move, self.piece)
+
+
+class GameBoard:
+    def __init__(self, size=3):
+        self.size = size
+        self.board = [['.' for _ in range(size)] for _ in range(size)]
+
+    def get_piece(self, x, y):
+        return self.board[y][x]
+
+    def is_valid_move(self, x, y):
+        return 0 <= x < self.size and 0 <= y < self.size and self.board[y][x] == '.'
+
+    def get_valid_moves(self):
+        valid_moves = []
+        for y in range(self.size):
+            for x in range(self.size):
+                if self.is_valid_move(x, y):
+                    valid_moves.append((x, y))
+        return valid_moves
+
+    def make_move(self, move, piece):
+        x, y = move
+        if self.is_valid_move(x, y):
+            self.board[y][x] = piece
+            return True
+        return False
+
+    def check_winner(self):
+        # Check rows
+        for row in self.board:
+            if all(cell == row[0] and cell != '.' for cell in row):
+                return row[0]
+
+        # Check columns
+        for col in range(self.size):
+            if all(self.board[row][col] == self.board[0][col] and self.board[row][col] != '.' for row in range(self.size)):
+                return self.board[0][col]
+
+        # Check diagonals
+        if all(self.board[i][i] == self.board[0][0] and self.board[i][i] != '.' for i in range(self.size)):
+            return self.board[0][0]
+        if all(self.board[i][self.size - 1 - i] == self.board[0][self.size - 1] and self.board[i][self.size - 1 - i] != '.' for i in range(self.size)):
+            return self.board[0][self.size - 1]
+
+        return None  # No winner yet
+
+    def get_winning_move(self, piece: str) -> Optional[Tuple[int, int]]:
+        """Finds a winning move for the given piece."""
+        for y in range(self.size):
+            for x in range(self.size):
+                if self.is_valid_move(x, y):
+                    self.board[y][x] = piece
+                    if self.check_winner() == piece:
+                        self.board[y][x] = EMPTY
+                        return (x, y)
+                    # Nếu không có nước thắng trực tiếp, đánh giá thế cờ
+                    score = self._evaluate_position(piece)
+                    if score > 0:  # Thế cờ có lợi
+                        self.board[y][x] = EMPTY
+                        return (x, y)
+                    self.board[y][x] = EMPTY
+        return None
+
+    def _evaluate_position(self, piece: str) -> int:
+        """Đánh giá thế cờ để luôn dẫn đến thắng/thua."""
+        score = 0
+        opponent = AI_PIECE if piece == PLAYER_PIECE else PLAYER_PIECE
+
+        # Đếm số quân liên tiếp
+        for i in range(BOARD_SIZE):
+            # Kiểm tra hàng
+            row = self.board[i]
+            score += self._count_sequence(row, piece)
+
+            # Kiểm tra cột
+            col = [self.board[j][i] for j in range(BOARD_SIZE)]
+            score += self._count_sequence(col, piece)
+
+        # Kiểm tra đường chéo
+        diag1 = [self.board[i][i] for i in range(BOARD_SIZE)]
+        score += self._count_sequence(diag1, piece) * 1.5  # Ưu tiên đường chéo
+
+        diag2 = [self.board[i][BOARD_SIZE-1-i] for i in range(BOARD_SIZE)]
+        score += self._count_sequence(diag2, piece) * 1.5
+
+        # Tính điểm âm cho quân đối thủ để tránh hòa
+        opponent_score = 0
+        for i in range(BOARD_SIZE):
+            row = self.board[i]
+            opponent_score += self._count_sequence(row, opponent)
+            col = [self.board[j][i] for j in range(BOARD_SIZE)]
+            opponent_score += self._count_sequence(col, opponent)
+
+        return score - opponent_score * 1.2  # Ưu tiên chặn đối thủ để tránh hòa
+
+    def _count_sequence(self, line: List[str], piece: str) -> int:
+        """Đếm điểm cho các chuỗi quân liên tiếp."""
+        count = line.count(piece)
+        empty = line.count(EMPTY)
+        if count == 0:
+            return 0
+        if empty == 0:
+            return -100  # Phạt nặng nếu không còn chỗ đánh
+        return count * (empty + 1)  # Điểm cao hơn nếu còn nhiều chỗ trống
