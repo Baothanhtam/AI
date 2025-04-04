@@ -1,0 +1,166 @@
+"""Simple game without detailed explanations."""
+from flask import Blueprint, request, jsonify, render_template
+from game_board import GameBoard
+from simple_markov_ai import SimpleMarkovAI
+from config import DIFFICULTY_LEVELS, AI_PIECE, PLAYER_PIECE
+
+# Create a Blueprint for simple game
+simple_game_bp = Blueprint('simple_game', __name__)
+
+@simple_game_bp.route('/simple_game')
+def index():
+    """Render the simple game page."""
+    return render_template('simple_game.html', difficulty_levels=DIFFICULTY_LEVELS)
+
+@simple_game_bp.route('/simple_ai_vs_ai')
+def ai_vs_ai_index():
+    """Render the simple AI vs AI game page."""
+    return render_template('simple_ai_vs_ai.html', difficulty_levels=DIFFICULTY_LEVELS)
+
+@simple_game_bp.route('/simple_game/new', methods=['POST'])
+def new_game():
+    """Start a new simple game with the chosen difficulty."""
+    difficulty = request.json.get('difficulty', 'medium')
+    transition_matrix = DIFFICULTY_LEVELS.get(difficulty, DIFFICULTY_LEVELS['medium'])
+    
+    # Initialize a new game
+    board = GameBoard()
+    
+    return jsonify({
+        'board': board.board,
+        'game_over': False,
+        'winner': None,
+        'difficulty': difficulty
+    })
+
+@simple_game_bp.route('/simple_game/move', methods=['POST'])
+def make_move():
+    """Process a player's move and get the AI's response in the simple game."""
+    # Get data from the request
+    current_board = request.json.get('board')
+    row = request.json.get('row')
+    col = request.json.get('col')
+    difficulty = request.json.get('difficulty', 'medium')
+    
+    # Recreate the game board from the current state
+    board = GameBoard()
+    board.board = current_board
+    
+    # Check if the game is already over
+    game_over, winner = board.check_game_over()
+    if game_over:
+        return jsonify({
+            'board': board.board,
+            'game_over': True,
+            'winner': winner,
+            'ai_move': None
+        })
+    
+    # Make the player's move
+    if not board.make_move(row, col, PLAYER_PIECE):
+        return jsonify({
+            'error': 'Invalid move',
+            'board': board.board,
+            'game_over': False,
+            'winner': None
+        })
+    
+    # Check if the game is over after player's move
+    game_over, winner = board.check_game_over()
+    if game_over:
+        return jsonify({
+            'board': board.board,
+            'game_over': True,
+            'winner': winner,
+            'ai_move': None
+        })
+    
+    # Make the AI's move
+    ai = SimpleMarkovAI(board, AI_PIECE, DIFFICULTY_LEVELS[difficulty])
+    ai_move = ai.get_next_move()
+    
+    # If AI has a valid move, make it
+    if ai_move:
+        board.make_move(ai_move[0], ai_move[1], AI_PIECE)
+        
+    # Check if the game is over after AI's move
+    game_over, winner = board.check_game_over()
+    
+    return jsonify({
+        'board': board.board,
+        'game_over': game_over,
+        'winner': winner,
+        'ai_move': ai_move,
+'ai_stats': ai.strategy_stats
+    })
+
+@simple_game_bp.route('/simple_ai_vs_ai/new', methods=['POST'])
+def new_ai_vs_ai_game():
+    """Start a new AI vs AI game with the chosen difficulty."""
+    difficulty_x = request.json.get('difficulty_x', 'medium')
+    difficulty_o = request.json.get('difficulty_o', 'medium')
+    
+    # Initialize a new game
+    board = GameBoard()
+    
+    return jsonify({
+        'board': board.board,
+        'game_over': False,
+        'winner': None,
+        'difficulty_x': difficulty_x,
+        'difficulty_o': difficulty_o
+    })
+
+@simple_game_bp.route('/simple_ai_vs_ai/next_move', methods=['POST'])
+def ai_vs_ai_next_move():
+    """Process the next move in the AI vs AI game."""
+    # Get data from the request
+    current_board = request.json.get('board')
+    current_player = request.json.get('current_player', 'X')  # X plays first
+    difficulty_x = request.json.get('difficulty_x', 'medium')
+    difficulty_o = request.json.get('difficulty_o', 'medium')
+    
+    # Recreate the game board from the current state
+    board = GameBoard()
+    board.board = current_board
+    
+    # Check if the game is already over
+    game_over, winner = board.check_game_over()
+    if game_over:
+        return jsonify({
+            'board': board.board,
+            'game_over': True,
+            'winner': winner,
+            'move': None,
+            'current_player': current_player
+        })
+    
+    # Determine which AI to use based on current player
+    if current_player == 'X':
+        ai_piece = 'X'
+        difficulty = difficulty_x
+        next_player = 'O'
+    else:
+        ai_piece = 'O'
+        difficulty = difficulty_o
+        next_player = 'X'
+    
+    # Make the AI's move
+    ai = SimpleMarkovAI(board, ai_piece, DIFFICULTY_LEVELS[difficulty])
+    ai_move = ai.get_next_move()
+    
+    # If AI has a valid move, make it
+    if ai_move:
+        board.make_move(ai_move[0], ai_move[1], ai_piece)
+    
+    # Check if the game is over after AI's move
+    game_over, winner = board.check_game_over()
+    
+    return jsonify({
+        'board': board.board,
+        'game_over': game_over,
+        'winner': winner,
+        'move': ai_move,
+        'current_player': next_player,
+        'ai_stats': ai.strategy_stats
+    })
